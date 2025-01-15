@@ -128,17 +128,13 @@ public class NvdCveAnalyzer extends AbstractAnalyzer {
      * @param vulns the vulnerability to add
      */
     private void replaceOrAddVulnerability(Dependency dependency, List<Vulnerability> vulns) {
-        vulns.stream().forEach(v -> {
-            v.getReferences().stream().forEach(ref -> {
-                dependency.getVulnerabilities().stream().forEach(existing -> {
-                    if (existing.getSource() == Source.NPM
-                            && ref.getName() != null
-                            && ref.getName().equals("https://nodesecurity.io/advisories/" + existing.getName())) {
-                        dependency.removeVulnerability(existing);
-                    }
-                });
-            });
-        });
+        vulns.forEach(v -> v.getReferences().forEach(ref -> dependency.getVulnerabilities().forEach(existing -> {
+                if (existing.getSource() == Source.NPM
+                        && ref.getName() != null
+                        && ref.getName().equals("https://nodesecurity.io/advisories/" + existing.getName())) {
+                    dependency.removeVulnerability(existing);
+                }
+            })));
         dependency.addVulnerabilities(vulns);
     }
 
@@ -150,7 +146,7 @@ public class NvdCveAnalyzer extends AbstractAnalyzer {
      * @param vulnerabilities the list of vulnerabilities to filter
      * @return the filtered list of vulnerabilities
      */
-    private List<Vulnerability> filterEcosystem(String ecosystem, List<Vulnerability> vulnerabilities) {
+    private synchronized List<Vulnerability> filterEcosystem(String ecosystem, List<Vulnerability> vulnerabilities) {
         final List<Vulnerability> remove = new ArrayList<>();
         vulnerabilities.forEach((v) -> {
             boolean found = false;
@@ -164,7 +160,7 @@ public class NvdCveAnalyzer extends AbstractAnalyzer {
             }
             if (found) {
                 if (!removeSoftare.isEmpty()) {
-                    v.getVulnerableSoftware().removeAll(removeSoftare);
+                    removeSoftare.forEach(v.getVulnerableSoftware()::remove);
                 }
             } else {
                 remove.add(v);
@@ -193,14 +189,9 @@ public class NvdCveAnalyzer extends AbstractAnalyzer {
         if (Ecosystem.NODEJS.equals(ecosystem)) {
             switch (targetSoftware.toLowerCase()) {
                 case "nodejs":
-                    return true;
                 case "node.js":
-                    return true;
-                //not actually in NVD...just future proofing
-                case "npm":
-                    return true;
                 case "node_js":
-                    return true;
+                case "npm":
                 case "node-js":
                     return true;
                 default:

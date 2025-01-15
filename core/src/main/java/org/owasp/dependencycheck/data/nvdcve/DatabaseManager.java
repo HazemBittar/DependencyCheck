@@ -30,6 +30,8 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import javax.annotation.concurrent.ThreadSafe;
 import org.anarres.jdiagnostics.DefaultQuery;
 import org.apache.commons.dbcp2.BasicDataSource;
@@ -195,6 +197,10 @@ public final class DatabaseManager {
                         LOGGER.debug("Unable to connect to the database", ex);
                         throw new DatabaseException("Unable to connect to the database", ex);
                     }
+                } else if (isH2 && ex.getMessage().contains("file version or invalid file header")) {
+                    LOGGER.error("Incompatible or corrupt database found. To resolve this issue please remove the existing "
+                            + "database by running purge");
+                    throw new DatabaseException("Incompatible or corrupt database found; run the purge command to resolve the issue");
                 } else {
                     LOGGER.debug("Unable to connect to the database", ex);
                     throw new DatabaseException("Unable to connect to the database", ex);
@@ -430,7 +436,7 @@ public final class DatabaseManager {
                     statement.execute(dbStructureUpdate);
                 } catch (SQLException ex) {
                     throw new DatabaseException(String.format("Unable to upgrade the database schema from %s to %s",
-                            currentDbVersion.toString(), appExpectedVersion.toString()), ex);
+                            currentDbVersion, appExpectedVersion.toString()), ex);
                 } finally {
                     DBUtils.closeStatement(statement);
                 }
@@ -459,6 +465,19 @@ public final class DatabaseManager {
     }
 
     /**
+     * Returns a resource bundle containing the SQL Statements needed for the
+     * database engine being used.
+     *
+     * @return a resource bundle containing the SQL Statements
+     */
+    public ResourceBundle getSqlStatements() {
+        final ResourceBundle statementBundle = getDatabaseProductName() != null
+                ? ResourceBundle.getBundle("data/dbStatements", new Locale(getDatabaseProductName()))
+                : ResourceBundle.getBundle("data/dbStatements");
+        return statementBundle;
+    }
+
+    /**
      * Uses the provided connection to check the specified schema version within
      * the database.
      *
@@ -469,9 +488,10 @@ public final class DatabaseManager {
     private void ensureSchemaVersion(Connection conn) throws DatabaseException {
         ResultSet rs = null;
         PreparedStatement ps = null;
+        final ResourceBundle statementBundle = getSqlStatements();
+        final String sql = statementBundle.getString("SELECT_SCHEMA_VERSION");
         try {
-            //TODO convert this to use DatabaseProperties
-            ps = conn.prepareStatement("SELECT value FROM properties WHERE id = 'version'");
+            ps = conn.prepareStatement(sql);
             rs = ps.executeQuery();
             if (rs.next()) {
                 final String dbSchemaVersion = settings.getString(Settings.KEYS.DB_VERSION);
@@ -483,8 +503,8 @@ public final class DatabaseManager {
                 if (db == null) {
                     throw new DatabaseException("Invalid database schema");
                 }
-                LOGGER.debug("DC Schema: {}", appDbVersion.toString());
-                LOGGER.debug("DB Schema: {}", db.toString());
+                LOGGER.debug("DC Schema: {}", appDbVersion);
+                LOGGER.debug("DB Schema: {}", db);
                 if (appDbVersion.compareTo(db) > 0) {
                     final boolean autoUpdate = settings.getBoolean(Settings.KEYS.AUTO_UPDATE, true);
                     if (autoUpdate) {

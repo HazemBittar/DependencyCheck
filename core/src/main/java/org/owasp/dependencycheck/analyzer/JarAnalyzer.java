@@ -20,6 +20,7 @@ package org.owasp.dependencycheck.analyzer;
 import com.github.packageurl.MalformedPackageURLException;
 import com.github.packageurl.PackageURL;
 import com.github.packageurl.PackageURLBuilder;
+import com.google.common.base.Strings;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.File;
 import java.io.FileFilter;
@@ -53,7 +54,7 @@ import java.util.zip.ZipEntry;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.h2.util.IOUtils;
+import org.apache.commons.io.IOUtils;
 import org.jsoup.Jsoup;
 import org.owasp.dependencycheck.Engine;
 import org.owasp.dependencycheck.analyzer.exception.AnalysisException;
@@ -68,6 +69,7 @@ import org.owasp.dependencycheck.exception.InitializationException;
 import org.owasp.dependencycheck.utils.FileFilterBuilder;
 import org.owasp.dependencycheck.utils.FileUtils;
 import org.owasp.dependencycheck.utils.Settings;
+import org.owasp.dependencycheck.xml.pom.Developer;
 import org.owasp.dependencycheck.xml.pom.License;
 import org.owasp.dependencycheck.xml.pom.Model;
 import org.owasp.dependencycheck.xml.pom.PomUtils;
@@ -131,6 +133,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
             "importpackage",
             "import-template",
             "importtemplate",
+            "java-vendor",
             "export-template",
             "exporttemplate",
             "ignorepackage",
@@ -148,6 +151,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
             "bundle-vendor",
             "include-resource",
             "embed-dependency",
+            "embedded-artifacts",
             "ipojo-components",
             "ipojo-extension",
             "plugin-dependencies",
@@ -155,7 +159,8 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
             "tstamp",
             "dstamp",
             "eclipse-sourcereferences",
-            "kotlin-version");
+            "kotlin-version",
+            "require-capability");
     /**
      * Deprecated Jar manifest attribute, that is, nonetheless, useful for
      * analysis.
@@ -274,7 +279,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
      */
     private boolean isExcludedJar(File path) {
         final String fileName = path.getName().toLowerCase();
-        return EXCLUDE_JARS.stream().anyMatch(exclude -> fileName.endsWith(exclude));
+        return EXCLUDE_JARS.stream().anyMatch(fileName::endsWith);
     }
     //</editor-fold>
 
@@ -424,7 +429,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
 
         //TODO add breakpoint on groov-all to find out why commons-cli is not added as a new dependency?
         boolean evidenceAdded = false;
-        try (JarFile jar = new JarFile(dependency.getActualFilePath())) {
+        try (JarFile jar = new JarFile(dependency.getActualFilePath(), false)) {
             //check if we are scanning in a repo directory - so the pom is adjacent to the jar
             final String repoPomName = FilenameUtils.removeExtension(dependency.getActualFilePath()) + ".pom";
             final File repoPom = new File(repoPomName);
@@ -442,6 +447,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
                     final Properties pomProperties = retrievePomProperties(path, jar);
                     final File pomFile = extractPom(path, jar);
                     final Model pom = PomUtils.readPom(pomFile);
+                    pom.setGAVFromPomDotProperties(pomProperties);
                     pom.processProperties(pomProperties);
 
                     final String artifactId = new File(path).getParentFile().getName();
@@ -506,12 +512,11 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
      * @return a Properties object or null if no pom.properties was found
      */
     private Properties retrievePomProperties(String path, final JarFile jar) {
-        Properties pomProperties = null;
+        final Properties pomProperties = new Properties();
         final String propPath = path.substring(0, path.length() - 7) + "pom.properties";
         final ZipEntry propEntry = jar.getEntry(propPath);
         if (propEntry != null) {
             try (Reader reader = new InputStreamReader(jar.getInputStream(propEntry), StandardCharsets.UTF_8)) {
-                pomProperties = new Properties();
                 pomProperties.load(reader);
                 LOGGER.debug("Read pom.properties: {}", propPath);
             } catch (UnsupportedEncodingException ex) {
@@ -582,18 +587,19 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
      * @return true if there was evidence within the pom that we could use;
      * otherwise false
      */
-    public static boolean setPomEvidence(Dependency dependency, Model pom, List<ClassNameInformation> classes, boolean isMainPom) {
+    public static boolean setPomEvidence(Dependency dependency, Model pom,
+            List<ClassNameInformation> classes, boolean isMainPom) {
         if (pom == null) {
             return false;
         }
         boolean foundSomething = false;
         boolean addAsIdentifier = true;
-        String groupid = pom.getGroupId();
-        String parentGroupId = pom.getParentGroupId();
-        String artifactid = pom.getArtifactId();
-        String parentArtifactId = pom.getParentArtifactId();
-        String version = pom.getVersion();
-        String parentVersion = pom.getParentVersion();
+        String groupid = intepolationFailCheck(pom.getGroupId());
+        String parentGroupId = intepolationFailCheck(pom.getParentGroupId());
+        String artifactid = intepolationFailCheck(pom.getArtifactId());
+        String parentArtifactId = intepolationFailCheck(pom.getParentArtifactId());
+        String version = intepolationFailCheck(pom.getVersion());
+        String parentVersion = intepolationFailCheck(pom.getParentVersion());
 
         if (("org.sonatype.oss".equals(parentGroupId) && "oss-parent".equals(parentArtifactId))
                 || ("org.springframework.boot".equals(parentGroupId) && "spring-boot-starter-parent".equals(parentArtifactId))) {
@@ -689,8 +695,6 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
                     id = new PurlIdentifier(purl, Confidence.HIGH);
                 } else {
                     LOGGER.debug("Invalid maven identifier identified: " + originalGroupID + ":" + originalArtifactID);
-//                    final String gav = String.format("%s:%s:%s", originalGroupID, originalArtifactID, version);
-//                    id = new GenericIdentifier("generic:" + gav, Confidence.LOW);
                 }
             } catch (MalformedPackageURLException ex) {
                 final String gav = String.format("%s:%s:%s", originalGroupID, originalArtifactID, version);
@@ -753,6 +757,34 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
             }
             dependency.addEvidence(EvidenceType.VENDOR, "pom", "url", projectURL, Confidence.HIGHEST);
 
+        }
+
+        if (pom.getDevelopers() != null && !pom.getDevelopers().isEmpty()) {
+            for (Developer dev : pom.getDevelopers()) {
+                if (!Strings.isNullOrEmpty(dev.getId())) {
+                    dependency.addEvidence(EvidenceType.VENDOR, "pom", "developer id", dev.getId(), Confidence.MEDIUM);
+                    dependency.addEvidence(EvidenceType.PRODUCT, "pom", "developer id", dev.getId(), Confidence.LOW);
+                }
+                if (!Strings.isNullOrEmpty(dev.getName())) {
+                    dependency.addEvidence(EvidenceType.VENDOR, "pom", "developer name", dev.getName(), Confidence.MEDIUM);
+                    dependency.addEvidence(EvidenceType.PRODUCT, "pom", "developer name", dev.getName(), Confidence.LOW);
+                }
+                if (!Strings.isNullOrEmpty(dev.getEmail())) {
+                    dependency.addEvidence(EvidenceType.VENDOR, "pom", "developer email", dev.getEmail(), Confidence.LOW);
+                    dependency.addEvidence(EvidenceType.PRODUCT, "pom", "developer email", dev.getEmail(), Confidence.LOW);
+                }
+                if (!Strings.isNullOrEmpty(dev.getOrganizationUrl())) {
+                    dependency.addEvidence(EvidenceType.VENDOR, "pom", "developer org URL", dev.getOrganizationUrl(), Confidence.MEDIUM);
+                    dependency.addEvidence(EvidenceType.PRODUCT, "pom", "developer org URL", dev.getOrganizationUrl(), Confidence.LOW);
+                }
+                final String devOrg = dev.getOrganization();
+                if (!Strings.isNullOrEmpty(devOrg)) {
+                    dependency.addEvidence(EvidenceType.VENDOR, "pom", "developer org", devOrg, Confidence.MEDIUM);
+                    dependency.addEvidence(EvidenceType.PRODUCT, "pom", "developer org", devOrg, Confidence.LOW);
+                    addMatchingValues(classes, devOrg, dependency, EvidenceType.VENDOR);
+                    addMatchingValues(classes, devOrg, dependency, EvidenceType.PRODUCT);
+                }
+            }
         }
 
         extractLicense(pom, dependency);
@@ -820,7 +852,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
     protected boolean parseManifest(Dependency dependency, List<ClassNameInformation> classInformation)
             throws IOException {
         boolean foundSomething = false;
-        try (JarFile jar = new JarFile(dependency.getActualFilePath())) {
+        try (JarFile jar = new JarFile(dependency.getActualFilePath(), false)) {
             final Manifest manifest = jar.getManifest();
             if (manifest == null) {
                 if (!dependency.getFileName().toLowerCase().endsWith("-sources.jar")
@@ -1138,7 +1170,7 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
      */
     protected List<ClassNameInformation> collectClassNames(Dependency dependency) {
         final List<ClassNameInformation> classNames = new ArrayList<>();
-        try (JarFile jar = new JarFile(dependency.getActualFilePath())) {
+        try (JarFile jar = new JarFile(dependency.getActualFilePath(), false)) {
             final Enumeration<JarEntry> entries = jar.entries();
             while (entries.hasMoreElements()) {
                 final JarEntry entry = entries.nextElement();
@@ -1255,6 +1287,19 @@ public class JarAnalyzer extends AbstractFileTypeAnalyzer {
         return !key.matches(".*(version|title|vendor|name|license|description).*")
                 && value.matches("^[a-zA-Z_][a-zA-Z0-9_\\$]*\\.([a-zA-Z_][a-zA-Z0-9_\\$]*\\.)*([a-zA-Z_][a-zA-Z0-9_\\$]*)$");
 
+    }
+
+    /**
+     * Returns null if the value starts with `${` and ends with `}`.
+     *
+     * @param value the value to check
+     * @return the correct value which may be null
+     */
+    private static String intepolationFailCheck(String value) {
+        if (value != null && value.contains("${")) {
+            return null;
+        }
+        return value;
     }
 
     /**

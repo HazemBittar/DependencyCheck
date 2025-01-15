@@ -51,9 +51,6 @@ if [ -f "$HOME/OWASP-Dependency-Check/reports/odc.log" ]; then
     rm "$HOME/OWASP-Dependency-Check/reports/odc.log"
 fi
 
-# Make sure we are using the latest version
-# docker pull owasp/dependency-check
-
 docker run --rm \
     -e user=$USER \
     -u $(id -u ${USER}):$(id -g ${USER}) \
@@ -66,8 +63,7 @@ docker run --rm \
     --project "test scan" \
     --out /report \
     --log /report/odc.log \
-    --cveDownloadWait 20000 \
-    --cveStartYear 2020
+    --nvdDatafeed https://jeremylong.github.io/DependencyCheck/hb_nvd/
 
 # return to original working directory
 cd -
