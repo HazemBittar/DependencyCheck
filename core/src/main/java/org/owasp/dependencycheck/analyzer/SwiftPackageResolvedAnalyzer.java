@@ -20,16 +20,6 @@ package org.owasp.dependencycheck.analyzer;
 import com.github.packageurl.MalformedPackageURLException;
 import com.github.packageurl.PackageURL;
 import com.github.packageurl.PackageURLBuilder;
-import java.io.FileFilter;
-import java.io.IOException;
-import java.io.InputStream;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.json.Json;
-import javax.json.JsonArray;
-import javax.json.JsonObject;
-import javax.json.JsonReader;
-
-import org.apache.commons.io.FileUtils;
 import org.owasp.dependencycheck.Engine;
 import org.owasp.dependencycheck.analyzer.exception.AnalysisException;
 import org.owasp.dependencycheck.data.nvd.ecosystem.Ecosystem;
@@ -43,6 +33,16 @@ import org.owasp.dependencycheck.utils.FileFilterBuilder;
 import org.owasp.dependencycheck.utils.Settings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.concurrent.ThreadSafe;
+import jakarta.json.Json;
+import jakarta.json.JsonArray;
+import jakarta.json.JsonObject;
+import jakarta.json.JsonReader;
+import java.io.FileFilter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 
 /**
  * This analyzer is used to analyze the SWIFT Package Resolved
@@ -155,29 +155,91 @@ public class SwiftPackageResolvedAnalyzer extends AbstractFileTypeAnalyzer {
     private void analyzeSpmResolvedDependencies(Dependency spmResolved, Engine engine)
             throws AnalysisException, IOException {
 
-        try (InputStream in = FileUtils.openInputStream(spmResolved.getActualFile());
-                JsonReader resolved = Json.createReader(in)) {
-            final JsonObject object = resolved.readObject().getJsonObject("object");
-            if (object == null) {
-                return;
+        try (InputStream in = Files.newInputStream(spmResolved.getActualFile().toPath());
+             JsonReader resolved = Json.createReader(in)) {
+            final JsonObject file = resolved.readObject();
+            final int fileVersion = file.getInt("version");
+
+            switch (fileVersion) {
+                case 1:
+                    analyzeSpmResolvedDependenciesV1(spmResolved, engine, file);
+                    break;
+                case 2:
+                case 3:
+                    analyzeSpmResolvedDependenciesV2And3(spmResolved, engine, file);
+                    break;
+                default:
+                    return;
             }
-            final JsonArray pins = object.getJsonArray("pins");
-            if (pins == null) {
-                return;
-            }
-            pins.forEach(row -> {
-                final JsonObject pin = (JsonObject) row;
-                final String name = pin.getString("package");
-                final String repo = pin.getString("repositoryURL");
-                String version = null;
-                final JsonObject state = pin.getJsonObject("state");
-                if (state != null) {
-                    version = state.getString("version");
-                }
-                final Dependency dependency = createDependency(spmResolved, SPM_RESOLVED_FILE_NAME, name, version, repo);
-                engine.addDependency(dependency);
-            });
         }
+    }
+
+    /**
+     * Analyzes the version 1 of the Package.resolved file to extract evidence
+     * for the dependency.
+     *
+     * @param spmResolved the dependency to analyze
+     * @param engine the analysis engine
+     * @param resolved the json object of the file to analyze
+     */
+    private void analyzeSpmResolvedDependenciesV1(Dependency spmResolved, Engine engine, JsonObject resolved) {
+        final JsonObject object = resolved.getJsonObject("object");
+        if (object == null) {
+            return;
+        }
+        final JsonArray pins = object.getJsonArray("pins");
+        if (pins == null) {
+            return;
+        }
+        pins.forEach(row -> {
+            final JsonObject pin = (JsonObject) row;
+            final String name = pin.getString("package");
+            final String repo = pin.getString("repositoryURL");
+            String version = null;
+            final JsonObject state = pin.getJsonObject("state");
+            if (state != null) {
+                if (!state.isNull("version")) {
+                    version = state.getString("version");
+                } else if (!state.isNull("branch")) {
+                    version = state.getString("branch");
+                }
+            }
+            final Dependency dependency = createDependency(spmResolved, SPM_RESOLVED_FILE_NAME, name, version, repo);
+            engine.addDependency(dependency);
+        });
+    }
+
+    /**
+     * Analyzes the versions 2 and 3 of the Package.resolved file to extract evidence
+     * for the dependency.
+     *
+     * @param spmResolved the dependency to analyze
+     * @param engine the analysis engine
+     * @param resolved the json object of the file to analyze
+     */
+    private void analyzeSpmResolvedDependenciesV2And3(Dependency spmResolved, Engine engine, JsonObject resolved) {
+        final JsonArray pins = resolved.getJsonArray("pins");
+        if (pins == null) {
+            return;
+        }
+        pins.forEach(row -> {
+            final JsonObject pin = (JsonObject) row;
+            final String name = pin.getString("identity");
+            final String repo = pin.getString("location");
+            String version = null;
+            final JsonObject state = pin.getJsonObject("state");
+            if (state != null) {
+                if (state.containsKey("version")
+                        && !state.isNull("version")
+                        && !state.getString("version").isEmpty()) {
+                    version = state.getString("version");
+                } else if (state.containsKey("branch") && !state.isNull("branch")) {
+                    version = state.getString("branch");
+                }
+            }
+            final Dependency dependency = createDependency(spmResolved, SPM_RESOLVED_FILE_NAME, name, version, repo);
+            engine.addDependency(dependency);
+        });
     }
 
     /**

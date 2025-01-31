@@ -17,33 +17,33 @@
  */
 package org.owasp.dependencycheck.analyzer;
 
-import org.apache.commons.io.FileUtils;
+import org.apache.commons.collections4.MultiValuedMap;
+import org.apache.commons.collections4.multimap.HashSetValuedHashMap;
 import org.owasp.dependencycheck.Engine;
 import org.owasp.dependencycheck.analyzer.exception.AnalysisException;
+import org.owasp.dependencycheck.analyzer.exception.SearchException;
+import org.owasp.dependencycheck.analyzer.exception.UnexpectedAnalysisException;
 import org.owasp.dependencycheck.data.nodeaudit.Advisory;
 import org.owasp.dependencycheck.data.nodeaudit.NpmPayloadBuilder;
+import org.owasp.dependencycheck.data.nvd.ecosystem.Ecosystem;
 import org.owasp.dependencycheck.dependency.Dependency;
 import org.owasp.dependencycheck.utils.FileFilterBuilder;
 import org.owasp.dependencycheck.utils.Settings;
+import org.owasp.dependencycheck.utils.URLConnectionFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import us.springett.parsers.cpe.exceptions.CpeValidationException;
+
+import javax.annotation.concurrent.ThreadSafe;
+import jakarta.json.Json;
+import jakarta.json.JsonException;
+import jakarta.json.JsonObject;
+import jakarta.json.JsonReader;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
-import java.util.HashMap;
+import java.nio.file.Files;
 import java.util.List;
-import java.util.Map;
-
-import javax.annotation.concurrent.ThreadSafe;
-import javax.json.Json;
-import javax.json.JsonException;
-import javax.json.JsonObject;
-import javax.json.JsonReader;
-import org.owasp.dependencycheck.analyzer.exception.SearchException;
-import org.owasp.dependencycheck.analyzer.exception.UnexpectedAnalysisException;
-import org.owasp.dependencycheck.data.nvd.ecosystem.Ecosystem;
-import org.owasp.dependencycheck.utils.URLConnectionFailureException;
-import us.springett.parsers.cpe.exceptions.CpeValidationException;
 
 /**
  * Used to analyze Node Package Manager (npm) package-lock.json and
@@ -140,7 +140,8 @@ public class NodeAuditAnalyzer extends AbstractNpmAnalyzer {
         }
         final File packageJson = new File(packageLock.getParentFile(), "package.json");
         final List<Advisory> advisories;
-        final Map<String, String> dependencyMap = new HashMap<>();
+        final MultiValuedMap<String, String> dependencyMap = new HashSetValuedHashMap<>();
+        //final Map<String, String> dependencyMap = new HashMap<>();
         if (packageJson.isFile()) {
             advisories = analyzePackage(packageLock, packageJson, dependency, dependencyMap);
         } else {
@@ -170,11 +171,11 @@ public class NodeAuditAnalyzer extends AbstractNpmAnalyzer {
      * submitting the npm audit API payload
      */
     private List<Advisory> analyzePackage(final File lockFile, final File packageFile,
-            Dependency dependency, Map<String, String> dependencyMap)
+                                          Dependency dependency, MultiValuedMap<String, String> dependencyMap)
             throws AnalysisException {
         try {
-            final JsonReader packageReader = Json.createReader(FileUtils.openInputStream(packageFile));
-            final JsonReader lockReader = Json.createReader(FileUtils.openInputStream(lockFile));
+            final JsonReader packageReader = Json.createReader(Files.newInputStream(packageFile.toPath()));
+            final JsonReader lockReader = Json.createReader(Files.newInputStream(lockFile.toPath()));
             // Retrieves the contents of package-lock.json from the Dependency
             final JsonObject lockJson = lockReader.readObject();
             // Retrieves the contents of package-lock.json from the Dependency
@@ -227,10 +228,10 @@ public class NodeAuditAnalyzer extends AbstractNpmAnalyzer {
      * @throws AnalysisException thrown when there is an error creating or
      * submitting the npm audit API payload
      */
-    private List<Advisory> legacyAnalysis(final File file, Dependency dependency, Map<String, String> dependencyMap)
+    private List<Advisory> legacyAnalysis(final File file, Dependency dependency, MultiValuedMap<String, String> dependencyMap)
             throws AnalysisException {
 
-        try (JsonReader jsonReader = Json.createReader(FileUtils.openInputStream(file))) {
+        try (JsonReader jsonReader = Json.createReader(Files.newInputStream(file.toPath()))) {
 
             // Retrieves the contents of package-lock.json from the Dependency
             final JsonObject packageJson = jsonReader.readObject();
@@ -245,7 +246,8 @@ public class NodeAuditAnalyzer extends AbstractNpmAnalyzer {
             }
 
             // Modify the payload to meet the NPM Audit API requirements
-            final JsonObject payload = NpmPayloadBuilder.build(packageJson, dependencyMap);
+            final JsonObject payload = NpmPayloadBuilder.build(packageJson, dependencyMap,
+                    getSettings().getBoolean(Settings.KEYS.ANALYZER_NODE_AUDIT_SKIPDEV, false));
 
             // Submits the package payload to the nsp check service
             return getSearcher().submitPackage(payload);

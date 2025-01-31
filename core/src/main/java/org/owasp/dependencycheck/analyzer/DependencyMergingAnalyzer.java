@@ -47,7 +47,11 @@ public class DependencyMergingAnalyzer extends AbstractDependencyComparingAnalyz
     /**
      * The phase that this analyzer is intended to run in.
      */
-    private static final AnalysisPhase ANALYSIS_PHASE = AnalysisPhase.POST_INFORMATION_COLLECTION;
+    private static final AnalysisPhase ANALYSIS_PHASE = AnalysisPhase.POST_INFORMATION_COLLECTION1;
+    /**
+     * Used for synchronization when merging related dependencies.
+     */
+    private static final Object DEPENDENCY_LOCK = new Object();
 
     /**
      * Returns the name of the analyzer.
@@ -121,6 +125,13 @@ public class DependencyMergingAnalyzer extends AbstractDependencyComparingAnalyz
                 mergeDependencies(nextDependency, dependency, dependenciesToRemove);
                 return true; //since we merged into the next dependency - skip forward to the next in mainIterator
             }
+        } else if ((main = getMainVirtualDependency(dependency, nextDependency)) != null) {
+            if (main == dependency) {
+                mergeDependencies(dependency, nextDependency, dependenciesToRemove);
+            } else {
+                mergeDependencies(nextDependency, dependency, dependenciesToRemove);
+                return true; //since we merged into the next dependency - skip forward to the next in mainIterator
+            }
         }
         //CSON: InnerAssignment
         return false;
@@ -138,18 +149,20 @@ public class DependencyMergingAnalyzer extends AbstractDependencyComparingAnalyz
      */
     public static void mergeDependencies(final Dependency dependency, final Dependency relatedDependency,
             final Set<Dependency> dependenciesToRemove) {
-        LOGGER.debug("Merging '{}' into '{}'", relatedDependency.getFilePath(), dependency.getFilePath());
-        dependency.addRelatedDependency(relatedDependency);
-        relatedDependency.getEvidence(EvidenceType.VENDOR).forEach((e) -> dependency.addEvidence(EvidenceType.VENDOR, e));
-        relatedDependency.getEvidence(EvidenceType.PRODUCT).forEach((e) -> dependency.addEvidence(EvidenceType.PRODUCT, e));
-        relatedDependency.getEvidence(EvidenceType.VERSION).forEach((e) -> dependency.addEvidence(EvidenceType.VERSION, e));
+        synchronized (DEPENDENCY_LOCK) {
+            LOGGER.debug("Merging '{}' into '{}'", relatedDependency.getFilePath(), dependency.getFilePath());
+            dependency.addRelatedDependency(relatedDependency);
+            relatedDependency.getEvidence(EvidenceType.VENDOR).forEach((e) -> dependency.addEvidence(EvidenceType.VENDOR, e));
+            relatedDependency.getEvidence(EvidenceType.PRODUCT).forEach((e) -> dependency.addEvidence(EvidenceType.PRODUCT, e));
+            relatedDependency.getEvidence(EvidenceType.VERSION).forEach((e) -> dependency.addEvidence(EvidenceType.VERSION, e));
 
-        relatedDependency.getRelatedDependencies().stream()
-                .forEach(dependency::addRelatedDependency);
-        relatedDependency.clearRelatedDependencies();
-        dependency.addAllProjectReferences(relatedDependency.getProjectReferences());
-        if (dependenciesToRemove != null) {
-            dependenciesToRemove.add(relatedDependency);
+            relatedDependency.getRelatedDependencies()
+                    .forEach(dependency::addRelatedDependency);
+            relatedDependency.clearRelatedDependencies();
+            dependency.addAllProjectReferences(relatedDependency.getProjectReferences());
+            if (dependenciesToRemove != null) {
+                dependenciesToRemove.add(relatedDependency);
+            }
         }
     }
 
@@ -296,6 +309,29 @@ public class DependencyMergingAnalyzer extends AbstractDependencyComparingAnalyz
             if (dependency1.isVirtual()) {
                 return dependency2;
             }
+            return dependency1;
+        }
+        return null;
+    }
+
+    /**
+     * Determines which of the virtual dependencies should be considered the
+     * primary.
+     *
+     * @param dependency1 the first virtual dependency to compare
+     * @param dependency2 the second virtual dependency to compare
+     *
+     * @return the first virtual dependency (or {code null} if they are not to
+     * be considered mergeable virtual dependencies)
+     */
+    protected Dependency getMainVirtualDependency(Dependency dependency1, Dependency dependency2) {
+        if (dependency1.isVirtual() && dependency2.isVirtual()
+                && dependency1.getName() != null && dependency2.getName() != null
+                && dependency1.getVersion() != null && dependency2.getVersion() != null
+                && dependency1.getActualFilePath() != null && dependency2.getActualFilePath() != null
+                && dependency1.getName().equals(dependency2.getName())
+                && dependency1.getVersion().equals(dependency2.getVersion())
+                && dependency1.getActualFilePath().equals(dependency2.getActualFilePath())) {
             return dependency1;
         }
         return null;

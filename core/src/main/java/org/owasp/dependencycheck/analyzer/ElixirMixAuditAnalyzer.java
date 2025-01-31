@@ -19,7 +19,6 @@ package org.owasp.dependencycheck.analyzer;
 
 import org.owasp.dependencycheck.Engine;
 import org.owasp.dependencycheck.analyzer.exception.AnalysisException;
-import org.owasp.dependencycheck.data.nvdcve.CveDB;
 import org.owasp.dependencycheck.dependency.Dependency;
 import org.owasp.dependencycheck.exception.InitializationException;
 import org.owasp.dependencycheck.utils.FileFilterBuilder;
@@ -34,8 +33,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import org.apache.commons.lang3.StringUtils;
+import org.owasp.dependencycheck.data.nvd.ecosystem.Ecosystem;
 import org.owasp.dependencycheck.processing.MixAuditProcessor;
 import org.owasp.dependencycheck.utils.processing.ProcessReader;
 
@@ -51,7 +52,7 @@ public class ElixirMixAuditAnalyzer extends AbstractFileTypeAnalyzer {
      * A descriptor for the type of dependencies processed or added by this
      * analyzer.
      */
-    public static final String DEPENDENCY_ECOSYSTEM = "elixir";
+    public static final String DEPENDENCY_ECOSYSTEM = Ecosystem.ELIXIR;
 
     /**
      * The name of the analyzer.
@@ -82,10 +83,6 @@ public class ElixirMixAuditAnalyzer extends AbstractFileTypeAnalyzer {
      * Criticality.
      */
     public static final String CRITICALITY = "Criticality: ";
-    /**
-     * The DAL.
-     */
-    private CveDB cvedb = null;
 
     /**
      * @return a filter that accepts files named mix.lock
@@ -97,15 +94,11 @@ public class ElixirMixAuditAnalyzer extends AbstractFileTypeAnalyzer {
 
     @Override
     protected void prepareFileTypeAnalyzer(Engine engine) throws InitializationException {
-        if (engine != null) {
-            this.cvedb = engine.getDatabase();
-        }
-
         // Here we check if mix_audit actually runs from this location. We do this by running the
         // `mix_audit --version` command and seeing whether or not it succeeds (if it returns with an exit value of 0)
         final Process process;
         try {
-            final List<String> mixAuditArgs = Arrays.asList("--version");
+            final List<String> mixAuditArgs = Collections.singletonList("--version");
             process = launchMixAudit(getSettings().getTempDirectory(), mixAuditArgs);
         } catch (AnalysisException ae) {
             setEnabled(false);

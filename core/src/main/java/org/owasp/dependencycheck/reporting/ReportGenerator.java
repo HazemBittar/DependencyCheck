@@ -17,24 +17,32 @@
  */
 package org.owasp.dependencycheck.reporting;
 
-import java.time.ZonedDateTime;
-import java.util.List;
-
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParser;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.text.WordUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.velocity.VelocityContext;
+import org.apache.velocity.app.VelocityEngine;
+import org.apache.velocity.context.Context;
+import org.owasp.dependencycheck.analyzer.Analyzer;
+import org.owasp.dependencycheck.data.nvdcve.DatabaseProperties;
+import org.owasp.dependencycheck.dependency.Dependency;
+import org.owasp.dependencycheck.dependency.EvidenceType;
+import org.owasp.dependencycheck.exception.ExceptionCollection;
+import org.owasp.dependencycheck.exception.ReportException;
+import org.owasp.dependencycheck.utils.Checksum;
+import org.owasp.dependencycheck.utils.FileUtils;
+import org.owasp.dependencycheck.utils.Settings;
+import org.owasp.dependencycheck.utils.XmlUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
-import java.time.format.DateTimeFormatter;
-import java.util.Collections;
 import javax.annotation.concurrent.NotThreadSafe;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.ParserConfigurationException;
@@ -46,30 +54,21 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.sax.SAXTransformerFactory;
 import javax.xml.transform.stream.StreamResult;
-
-import org.apache.commons.text.WordUtils;
-import org.apache.velocity.VelocityContext;
-import org.apache.velocity.app.VelocityEngine;
-import org.apache.velocity.context.Context;
-
-import org.owasp.dependencycheck.analyzer.Analyzer;
-import org.owasp.dependencycheck.data.nvdcve.DatabaseProperties;
-import org.owasp.dependencycheck.dependency.Dependency;
-import org.owasp.dependencycheck.dependency.EvidenceType;
-import org.owasp.dependencycheck.exception.ExceptionCollection;
-import org.owasp.dependencycheck.exception.ReportException;
-import org.owasp.dependencycheck.utils.FileUtils;
-import org.owasp.dependencycheck.utils.Settings;
-import org.owasp.dependencycheck.utils.XmlUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
-import org.xml.sax.XMLReader;
-
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonParser;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * The ReportGenerator is used to, as the name implies, generate reports.
@@ -117,9 +116,21 @@ public class ReportGenerator {
          */
         SARIF,
         /**
+         * Generate HTML report without script or non-vulnerable libraries for
+         * Jenkins.
+         */
+        JENKINS,
+        /**
          * Generate JUNIT report.
          */
-        JUNIT
+        JUNIT,
+        /**
+         * Generate Report in GitLab dependency check format.
+         *
+         * @see <a href="https://gitlab.com/gitlab-org/security-products/security-report-schemas/-/blob/master/dist/dependency-scanning-report-format.json">format definition</a>
+         * @see <a href="https://docs.gitlab.com/ee/development/integrations/secure.html">additional explanations on the format</a>
+         */
+        GITLAB
     }
 
     /**
@@ -137,6 +148,7 @@ public class ReportGenerator {
 
     //CSOFF: ParameterNumber
     //CSOFF: LineLength
+
     /**
      * Constructs a new ReportGenerator.
      *
@@ -151,7 +163,7 @@ public class ReportGenerator {
      */
     @Deprecated
     public ReportGenerator(String applicationName, List<Dependency> dependencies, List<Analyzer> analyzers,
-            DatabaseProperties properties, Settings settings) {
+                           DatabaseProperties properties, Settings settings) {
         this(applicationName, dependencies, analyzers, properties, settings, null);
     }
 
@@ -169,7 +181,7 @@ public class ReportGenerator {
      * @since 5.1.0
      */
     public ReportGenerator(String applicationName, List<Dependency> dependencies, List<Analyzer> analyzers,
-            DatabaseProperties properties, Settings settings, ExceptionCollection exceptions) {
+                           DatabaseProperties properties, Settings settings, ExceptionCollection exceptions) {
         this(applicationName, null, null, null, dependencies, analyzers, properties, settings, exceptions);
     }
 
@@ -190,8 +202,8 @@ public class ReportGenerator {
      */
     @Deprecated
     public ReportGenerator(String applicationName, String groupID, String artifactID, String version,
-            List<Dependency> dependencies, List<Analyzer> analyzers, DatabaseProperties properties,
-            Settings settings) {
+                           List<Dependency> dependencies, List<Analyzer> analyzers, DatabaseProperties properties,
+                           Settings settings) {
         this(applicationName, groupID, artifactID, version, dependencies, analyzers, properties, settings, null);
     }
 
@@ -212,8 +224,8 @@ public class ReportGenerator {
      * @since 5.1.0
      */
     public ReportGenerator(String applicationName, String groupID, String artifactID, String version,
-            List<Dependency> dependencies, List<Analyzer> analyzers, DatabaseProperties properties,
-            Settings settings, ExceptionCollection exceptions) {
+                           List<Dependency> dependencies, List<Analyzer> analyzers, DatabaseProperties properties,
+                           Settings settings, ExceptionCollection exceptions) {
         this.settings = settings;
         velocityEngine = createVelocityEngine();
         velocityEngine.init();
@@ -239,26 +251,30 @@ public class ReportGenerator {
      */
     @SuppressWarnings("JavaTimeDefaultTimeZone")
     private VelocityContext createContext(String applicationName, List<Dependency> dependencies,
-            List<Analyzer> analyzers, DatabaseProperties properties, String groupID,
-            String artifactID, String version, ExceptionCollection exceptions) {
+                                          List<Analyzer> analyzers, DatabaseProperties properties, String groupID,
+                                          String artifactID, String version, ExceptionCollection exceptions) {
 
         final ZonedDateTime dt = ZonedDateTime.now();
         final String scanDate = DateTimeFormatter.RFC_1123_DATE_TIME.format(dt);
         final String scanDateXML = DateTimeFormatter.ISO_INSTANT.format(dt);
         final String scanDateJunit = DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(dt);
+        final String scanDateGitLab = DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(dt.withNano(0));
 
         final VelocityContext ctxt = new VelocityContext();
         ctxt.put("applicationName", applicationName);
-        Collections.sort(dependencies, Dependency.NAME_COMPARATOR);
+        dependencies.sort(Dependency.NAME_COMPARATOR);
         ctxt.put("dependencies", dependencies);
         ctxt.put("analyzers", analyzers);
         ctxt.put("properties", properties);
         ctxt.put("scanDate", scanDate);
         ctxt.put("scanDateXML", scanDateXML);
         ctxt.put("scanDateJunit", scanDateJunit);
+        ctxt.put("scanDateGitLab", scanDateGitLab);
         ctxt.put("enc", new EscapeTool());
         ctxt.put("rpt", new ReportTool());
+        ctxt.put("checksum", Checksum.class);
         ctxt.put("WordUtils", new WordUtils());
+        ctxt.put("StringUtils", new StringUtils());
         ctxt.put("VENDOR", EvidenceType.VENDOR);
         ctxt.put("PRODUCT", EvidenceType.PRODUCT);
         ctxt.put("VERSION", EvidenceType.VERSION);
@@ -294,9 +310,9 @@ public class ReportGenerator {
      * Writes the dependency-check report to the given output location.
      *
      * @param outputLocation the path where the reports should be written
-     * @param format the format the report should be written in (XML, HTML,
-     * JSON, CSV, ALL) or even the path to a custom velocity template (either
-     * fully qualified or the template name on the class path).
+     * @param format the format the report should be written in (a valid member
+     * of {@link Format}) or even the path to a custom velocity template
+     * (either fully qualified or the template name on the class path).
      * @throws ReportException is thrown if there is an error creating out the
      * reports
      */
@@ -311,10 +327,12 @@ public class ReportGenerator {
         if (reportFormat != null) {
             write(outputLocation, reportFormat);
         } else {
-            final File out = getReportFile(outputLocation, null);
+            File out = getReportFile(outputLocation, null);
             if (out.isDirectory()) {
-                throw new ReportException("Unable to write non-standard VSL output to a directory, please specify a file name");
+                out = new File(out, FilenameUtils.getBaseName(format));
+                LOGGER.warn("Writing non-standard VSL output to a directory using template name as file name.");
             }
+            LOGGER.info("Writing custom report to: {}", out.getAbsolutePath());
             processTemplate(format, out);
         }
 
@@ -324,7 +342,8 @@ public class ReportGenerator {
      * Writes the dependency-check report(s).
      *
      * @param outputLocation the path where the reports should be written
-     * @param format the format the report should be written in (XML, HTML, ALL)
+     * @param format the format the report should be written in (see
+     * {@link Format})
      * @throws ReportException is thrown if there is an error creating out the
      * reports
      */
@@ -338,6 +357,7 @@ public class ReportGenerator {
         } else {
             final File out = getReportFile(outputLocation, format);
             final String templateName = format.toString().toLowerCase() + "Report";
+            LOGGER.info("Writing {} report to: {}", format, out.getAbsolutePath());
             processTemplate(templateName, out);
             if (settings.getBoolean(Settings.KEYS.PRETTY_PRINT, false)) {
                 if (format == Format.JSON || format == Format.SARIF) {
@@ -372,6 +392,9 @@ public class ReportGenerator {
         if (format == Format.HTML && !pathToCheck.endsWith(".html") && !pathToCheck.endsWith(".htm")) {
             return new File(outFile, "dependency-check-report.html");
         }
+        if (format == Format.JENKINS && !pathToCheck.endsWith(".html") && !pathToCheck.endsWith(".htm")) {
+            return new File(outFile, "dependency-check-jenkins.html");
+        }
         if (format == Format.JSON && !pathToCheck.endsWith(".json")) {
             return new File(outFile, "dependency-check-report.json");
         }
@@ -383,6 +406,9 @@ public class ReportGenerator {
         }
         if (format == Format.SARIF && !pathToCheck.endsWith(".sarif")) {
             return new File(outFile, "dependency-check-report.sarif");
+        }
+        if (format == Format.GITLAB && !pathToCheck.endsWith(".json")) {
+            return new File(outFile, "dependency-check-gitlab.json");
         }
         return outFile;
     }
@@ -400,7 +426,6 @@ public class ReportGenerator {
     @SuppressFBWarnings(justification = "try with resources will clean up the output stream", value = {"OBL_UNSATISFIED_OBLIGATION"})
     protected void processTemplate(String template, File file) throws ReportException {
         ensureParentDirectoryExists(file);
-        LOGGER.info("Writing report to: " + file.getAbsolutePath());
         try (OutputStream output = new FileOutputStream(file)) {
             processTemplate(template, output);
         } catch (IOException ex) {
@@ -443,7 +468,7 @@ public class ReportGenerator {
             }
 
             try (InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8);
-                    OutputStreamWriter writer = new OutputStreamWriter(outputStream, StandardCharsets.UTF_8)) {
+                 OutputStreamWriter writer = new OutputStreamWriter(outputStream, StandardCharsets.UTF_8)) {
                 if (!velocityEngine.evaluate(context, writer, logTag, reader)) {
                     throw new ReportException("Failed to convert the template into html.");
                 }
@@ -505,7 +530,7 @@ public class ReportGenerator {
             final XMLReader saxReader = XmlUtils.buildSecureSaxParser().getXMLReader();
 
             saxs.setXMLReader(saxReader);
-            transformer.transform(saxs, new StreamResult(new OutputStreamWriter(os, "utf-8")));
+            transformer.transform(saxs, new StreamResult(new OutputStreamWriter(os, StandardCharsets.UTF_8)));
         } catch (ParserConfigurationException | TransformerConfigurationException ex) {
             LOGGER.debug("Configuration exception when pretty printing", ex);
             LOGGER.error("Unable to generate pretty report, caused by: {}", ex.getMessage());
@@ -516,7 +541,7 @@ public class ReportGenerator {
         if (out.isFile() && in.isFile() && in.delete()) {
             try {
                 Thread.sleep(1000);
-                org.apache.commons.io.FileUtils.moveFile(out, in);
+                Files.move(out.toPath(), in.toPath());
             } catch (IOException ex) {
                 LOGGER.error("Unable to generate pretty report, caused by: {}", ex.getMessage());
             } catch (InterruptedException ex) {
@@ -540,8 +565,7 @@ public class ReportGenerator {
 
         final JsonFactory factory = new JsonFactory();
 
-        try (InputStream is = new FileInputStream(in);
-                OutputStream os = new FileOutputStream(out)) {
+        try (InputStream is = new FileInputStream(in); OutputStream os = new FileOutputStream(out)) {
 
             final JsonParser parser = factory.createParser(is);
             final JsonGenerator generator = factory.createGenerator(os);
@@ -559,7 +583,7 @@ public class ReportGenerator {
         if (out.isFile() && in.isFile() && in.delete()) {
             try {
                 Thread.sleep(1000);
-                org.apache.commons.io.FileUtils.moveFile(out, in);
+                Files.move(out.toPath(), in.toPath());
             } catch (IOException ex) {
                 LOGGER.error("Unable to generate pretty report, caused by: {}", ex.getMessage());
             } catch (InterruptedException ex) {

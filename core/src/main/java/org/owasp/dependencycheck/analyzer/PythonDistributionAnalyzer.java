@@ -24,7 +24,6 @@ import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,6 +35,7 @@ import org.owasp.dependencycheck.Engine;
 import org.owasp.dependencycheck.analyzer.exception.AnalysisException;
 import org.owasp.dependencycheck.dependency.Confidence;
 import org.owasp.dependencycheck.dependency.Dependency;
+import org.owasp.dependencycheck.utils.PyPACoreMetadataParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -289,8 +289,8 @@ public class PythonDistributionAnalyzer extends AbstractFileTypeAnalyzer {
      * @param dependency the dependency being analyzed
      * @param file a reference to the manifest/properties file
      */
-    private static void collectWheelMetadata(Dependency dependency, File file) {
-        final Properties headers = getManifestProperties(file);
+    private static void collectWheelMetadata(Dependency dependency, File file) throws AnalysisException {
+        final Properties headers = PyPACoreMetadataParser.getProperties(file);
         final String version = addPropertyToEvidence(dependency, EvidenceType.VERSION, Confidence.HIGHEST, headers, "Version");
         final String name = addPropertyToEvidence(dependency, EvidenceType.VENDOR, Confidence.HIGHEST, headers, "Name");
         addPropertyToEvidence(dependency, EvidenceType.PRODUCT, Confidence.HIGHEST, headers, "Name");
@@ -374,10 +374,8 @@ public class PythonDistributionAnalyzer extends AbstractFileTypeAnalyzer {
         } else {
             try (InputStream in = new BufferedInputStream(new FileInputStream(manifest))) {
                 prop.load(in);
-            } catch (FileNotFoundException e) {
+            } catch (IOException e) {
                 LOGGER.warn(e.getMessage(), e);
-            } catch (IOException ex) {
-                LOGGER.warn(ex.getMessage(), ex);
             }
         }
         return prop;
